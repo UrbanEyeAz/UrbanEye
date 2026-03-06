@@ -738,7 +738,7 @@ async function runRealTimeAnalysis() {
       <div class="proof-img-wrap"><span class="proof-lbl">Optical Signatures</span><canvas id="c-msk" class="proof-canvas pixelated"></canvas></div>
     </div>
   `;
-  list.innerHTML = `<div style="color:var(--text-3);font-size:12px;text-align:center;padding:20px 0;">Scanning for chemical optical signatures of construction...</div>`;
+  list.innerHTML = `<div style="color:var(--text-3);font-size:12px;text-align:center;padding:20px 0;">Sending coordinates to Cloud AI Server...</div>`;
 
   const tok = await getToken();
   if (!tok) {
@@ -762,8 +762,6 @@ async function runRealTimeAnalysis() {
         pxWidth = Math.round(1024 * aspect);
     }
     
-    const mpp = widthMeters / pxWidth; 
-
     const now = new Date();
     const todayStr = now.toISOString().split('T')[0];
     const pastStr = new Date(now.getTime() - 120 * 86400000).toISOString().split('T')[0]; 
@@ -787,7 +785,7 @@ async function runRealTimeAnalysis() {
     overlayBefore = L.imageOverlay(currentBeforeUrl, aoiRect.bounds, {opacity: 1, zIndex: 400, className: 'pixelated'});
     overlayAfter = L.imageOverlay(currentAfterUrl, aoiRect.bounds, {opacity: 1, zIndex: 400, className: 'pixelated'});
 
-    document.getElementById('analysis-status-text').innerHTML = `<div class="analysis-loader"><div class="spinner"></div> Running Optical Signature Detection...</div>`;
+    document.getElementById('analysis-status-text').innerHTML = `<div class="analysis-loader"><div class="spinner"></div> Awaiting Cloud AI Inference...</div>`;
 
     const imgBefore = await createImg(currentBeforeUrl);
     const imgAfter = await createImg(currentAfterUrl);
@@ -802,7 +800,6 @@ async function runRealTimeAnalysis() {
 
     const cb = cBef.getContext('2d', {willReadFrequently: true});
     const ca = cAft.getContext('2d', {willReadFrequently: true});
-    const cm = cMsk.getContext('2d');
     
     cb.imageSmoothingEnabled = false;
     ca.imageSmoothingEnabled = false;
@@ -811,117 +808,69 @@ async function runRealTimeAnalysis() {
     ca.drawImage(imgAfter,  0, 0, pxWidth, pxHeight);
 
     // =========================================================================================
-    // FUNCTIONAL AI LOGIC: Optical Physics Signature Detection
+    // CLOUD AI API CALL (Connected to Google Colab / Ngrok)
     // =========================================================================================
-    const dataB = cb.getImageData(0, 0, pxWidth, pxHeight).data;
-    const dataA = ca.getImageData(0, 0, pxWidth, pxHeight).data;
-    const imgDataM = cm.createImageData(pxWidth, pxHeight);
-    const dataM = imgDataM.data;
+    
+    // REPLACE THIS URL WITH YOUR LIVE NGROK LINK FROM COLAB!
+    const AI_API_URL = "https://nonexperientially-nonconsistorial-huey.ngrok-free.dev/analyze";
 
-    const GRID_SIZE = Math.max(4, Math.round(30 / mpp)); 
-    const cols = Math.floor(pxWidth / GRID_SIZE);
-    const rows = Math.floor(pxHeight / GRID_SIZE);
-    const changeBlocks = new Array(rows * cols).fill(null).map(() => ({ count: 0, typeTotal: 0 }));
-    let totalChangedPixels = 0;
-
-    for (let y = 0; y < pxHeight; y++) {
-      for (let x = 0; x < pxWidth; x++) {
-        const i = (y * pxWidth + x) * 4;
-        
-        const r1 = dataB[i], g1 = dataB[i+1], b1 = dataB[i+2], a1 = dataB[i+3];
-        const r2 = dataA[i], g2 = dataA[i+1], b2 = dataA[i+2], a2 = dataA[i+3];
-
-        if (a1 === 0 || a2 === 0) {
-          dataM[i]=0; dataM[i+1]=0; dataM[i+2]=0; dataM[i+3]=255; continue;
+    const response = await fetch(AI_API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "ngrok-skip-browser-warning": "true" 
+      },
+      body: JSON.stringify({
+        bounds: {
+          north: aoiRect.ne.lat,
+          south: aoiRect.sw.lat,
+          east: aoiRect.ne.lng,
+          west: aoiRect.sw.lng
         }
-        if ((r1>240 && g1>240 && b1>240) || (r2>240 && g2>240 && b2>240)) {
-          dataM[i]=0; dataM[i+1]=0; dataM[i+2]=0; dataM[i+3]=255; continue;
-        }
+      })
+    });
 
-        const delta = Math.abs(r1-r2) + Math.abs(g1-g2) + Math.abs(b1-b2);
-        const lum1 = (r1 * 0.299) + (g1 * 0.587) + (b1 * 0.114);
-        const lum2 = (r2 * 0.299) + (g2 * 0.587) + (b2 * 0.114);
-        
-        const veg1 = (g1 - r1) / (g1 + r1 + 0.001);
-        const veg2 = (g2 - r2) / (g2 + r2 + 0.001);
-
-        let detected = false;
-        let typeCode = 0; 
-
-        if (delta > 90) {
-            // SIGNATURE A: Land Clearing / Earthworks
-            if (veg1 > 0.04 && veg2 <= 0.0 && r2 > g2) {
-                detected = true;
-                typeCode = 1;
-            }
-            // SIGNATURE B: New Construction / Concrete
-            else if (lum2 > lum1 + 50 && Math.abs(r2-g2) < 25 && Math.abs(g2-b2) < 25) {
-                detected = true;
-                typeCode = 2;
-            }
-            // SIGNATURE C: High-Albedo Roof
-            else if (delta > 180 && lum2 > 130 && lum1 < 90) {
-                detected = true;
-                typeCode = 2;
-            }
-        }
-
-        if (detected) { 
-          dataM[i]   = typeCode === 1 ? 245 : 244; 
-          dataM[i+1] = typeCode === 1 ? 158 : 63;  
-          dataM[i+2] = typeCode === 1 ? 11  : 94;  
-          dataM[i+3] = 255; 
-          
-          totalChangedPixels++;
-          const bx = Math.floor(x / GRID_SIZE);
-          const by = Math.floor(y / GRID_SIZE);
-          if (bx < cols && by < rows) { 
-              changeBlocks[by * cols + bx].count++; 
-              changeBlocks[by * cols + bx].typeTotal += typeCode;
-          }
-        } else {
-          const gray = lum2;
-          dataM[i] = gray*0.35; dataM[i+1] = gray*0.35; dataM[i+2] = gray*0.35; dataM[i+3] = 255;
-        }
-      }
-    }
-    cm.putImageData(imgDataM, 0, 0);
-
-    // 7. Extract coordinate clusters
-    realDetections = [];
-    const triggerThreshold = (GRID_SIZE * GRID_SIZE) * 0.15; 
-
-    for (let by = 0; by < rows; by++) {
-      for (let bx = 0; bx < cols; bx++) {
-        const block = changeBlocks[by * cols + bx];
-        if (block.count > triggerThreshold) { 
-          
-          const pixelX = bx * GRID_SIZE + (GRID_SIZE/2);
-          const pixelY = by * GRID_SIZE + (GRID_SIZE/2);
-          
-          const swLat = aoiRect.sw.lat, swLng = aoiRect.sw.lng;
-          const neLat = aoiRect.ne.lat, neLng = aoiRect.ne.lng;
-          
-          const lat = neLat - (pixelY / pxHeight) * (neLat - swLat);
-          const lng = swLng + (pixelX / pxWidth)  * (neLng - swLng);
-
-          const avgType = block.typeTotal / block.count;
-          const label = avgType < 1.5 ? "Land Clearing / Earthworks" : "New Structure / Concrete";
-          const color = avgType < 1.5 ? "#f59e0b" : "#f43f5e";
-
-          realDetections.push({
-            id: 'DET-' + Math.floor(Math.random()*90000 + 10000),
-            lat: lat,
-            lng: lng,
-            conf: Math.min(99.9, 75 + (block.count / (GRID_SIZE*GRID_SIZE)) * 100),
-            pixels: block.count,
-            label: label,
-            color: color
-          });
-        }
-      }
+    const result = await response.json();
+    
+    if (result.status === "success") {
+      realDetections = result.detections;
+    } else {
+      realDetections = [];
     }
 
+    document.getElementById('analysis-status-text').innerHTML = `
+      Analyzed sector via <b style="color:var(--teal)">Cloud AI</b>.<br>
+      Found <b>${realDetections.length}</b> verified construction signatures.<br>
+    `;
+
+    // Swap Bottom Bar UI to Map Overlay controls
+    document.getElementById('aoi-default-controls').style.display = 'none';
+    const postControls = document.getElementById('aoi-post-controls');
+    postControls.style.display = 'flex';
+    postControls.innerHTML = `
+      <span class="aoi-bottom-label" style="color:var(--text-1)">MAP OVERLAYS:</span>
+      <button class="aoi-run-btn" style="background:#3b82f6;color:#fff" onclick="toggleMapOverlay('before')">📅 ${yearsLabel}</button>
+      <button class="aoi-run-btn" style="background:var(--teal);color:#111" onclick="toggleMapOverlay('after')">📡 Today</button>
+      <button class="aoi-run-btn" style="background:var(--bg-card);color:var(--text-1);border:1px solid var(--border)" onclick="toggleMapOverlay('none')">🗺️ Base</button>
+      <div class="aoi-sep"></div>
+      <button class="aoi-run-btn" style="background:var(--amber);color:#111" id="toggle-dots-btn" onclick="toggleMarkers()">👁 Hide Dots</button>
+      <button class="aoi-clear-btn" onclick="clearAOI()">✕ Clear</button>
+    `;
+
+    // Default to showing "After" overlay for visual context
+    toggleMapOverlay('after');
+    plotRealDetections();
+
+  } catch (err) {
+    console.error("Analysis aborted:", err);
+    document.getElementById('analysis-status-text').innerHTML = `
+      <div style="color:var(--red);font-size:11px;padding:8px;background:var(--bg-card);border:1px solid rgba(244,63,94,0.3);border-radius:6px;margin-bottom:8px;line-height:1.4;">
+        <b>Analysis aborted:</b><br>${err.message}
+      </div>
+    `;
+    list.innerHTML = `<div style="color:var(--text-3);font-size:12px;text-align:center;padding:20px 0;">Awaiting valid data.</div>`;
+  }
+}
     realDetections.sort((a,b) => b.conf - a.conf);
 
     document.getElementById('analysis-status-text').innerHTML = `
@@ -1051,4 +1000,5 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 </script>
 </body>
+
 </html>
