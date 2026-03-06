@@ -738,11 +738,11 @@ async function runRealTimeAnalysis() {
       <div class="proof-img-wrap"><span class="proof-lbl">Optical Signatures</span><canvas id="c-msk" class="proof-canvas pixelated"></canvas></div>
     </div>
   `;
-  list.innerHTML = `<div style="color:var(--text-3);font-size:12px;text-align:center;padding:20px 0;">Sending coordinates to Cloud AI Server...</div>`;
+  list.innerHTML = `<div style="color:var(--text-3);font-size:12px;text-align:center;padding:20px 0;">Connecting to AI Cloud Server...</div>`;
 
   const tok = await getToken();
   if (!tok) {
-    document.getElementById('analysis-status-text').innerHTML = '<div style="color:var(--red)">Authentication failed. Cannot fetch satellite data.</div>';
+    document.getElementById('analysis-status-text').innerHTML = '<div style="color:var(--red)">Authentication failed.</div>';
     return;
   }
 
@@ -757,157 +757,69 @@ async function runRealTimeAnalysis() {
 
     let pxWidth = 1024;
     let pxHeight = Math.round(1024 / aspect);
-    if (pxHeight > 1024) {
-        pxHeight = 1024;
-        pxWidth = Math.round(1024 * aspect);
-    }
+    if (pxHeight > 1024) { pxHeight = 1024; pxWidth = Math.round(1024 * aspect); }
     
     const now = new Date();
-    const todayStr = now.toISOString().split('T')[0];
-    const pastStr = new Date(now.getTime() - 120 * 86400000).toISOString().split('T')[0]; 
-    
     const historyTarget = new Date(now.getTime() - yearsBack * 365 * 86400000);
-    const beforeToStr = historyTarget.toISOString().split('T')[0];
-    const beforeFromStr = new Date(historyTarget.getTime() - 120 * 86400000).toISOString().split('T')[0];
-
-    document.getElementById('analysis-status-text').innerHTML = `<div class="analysis-loader"><div class="spinner"></div> Generating Supersampled Imagery (${pxWidth}x${pxHeight}px)...</div>`;
-
+    
     const [urlBefore, urlAfter] = await Promise.all([
-      fetchProcessAPI(aoiRect.bounds, beforeFromStr, beforeToStr, tok, pxWidth, pxHeight),
-      fetchProcessAPI(aoiRect.bounds, pastStr, todayStr, tok, pxWidth, pxHeight)
+      fetchProcessAPI(aoiRect.bounds, new Date(historyTarget.getTime() - 120 * 86400000).toISOString().split('T')[0], historyTarget.toISOString().split('T')[0], tok, pxWidth, pxHeight),
+      fetchProcessAPI(aoiRect.bounds, new Date(now.getTime() - 120 * 86400000).toISOString().split('T')[0], now.toISOString().split('T')[0], tok, pxWidth, pxHeight)
     ]);
     
-    currentBeforeUrl = urlBefore;
-    currentAfterUrl = urlAfter;
+    currentBeforeUrl = urlBefore; currentAfterUrl = urlAfter;
 
     if (overlayBefore) map.removeLayer(overlayBefore);
     if (overlayAfter) map.removeLayer(overlayAfter);
     overlayBefore = L.imageOverlay(currentBeforeUrl, aoiRect.bounds, {opacity: 1, zIndex: 400, className: 'pixelated'});
     overlayAfter = L.imageOverlay(currentAfterUrl, aoiRect.bounds, {opacity: 1, zIndex: 400, className: 'pixelated'});
 
-    document.getElementById('analysis-status-text').innerHTML = `<div class="analysis-loader"><div class="spinner"></div> Awaiting Cloud AI Inference...</div>`;
+    document.getElementById('analysis-status-text').innerHTML = `<div class="analysis-loader"><div class="spinner"></div> Requesting AI Inference...</div>`;
 
     const imgBefore = await createImg(currentBeforeUrl);
     const imgAfter = await createImg(currentAfterUrl);
 
-    const cBef = document.getElementById('c-bef');
-    const cAft = document.getElementById('c-aft');
-    const cMsk = document.getElementById('c-msk');
-    
-    cBef.width = pxWidth; cBef.height = pxHeight;
-    cAft.width = pxWidth; cAft.height = pxHeight;
-    cMsk.width = pxWidth; cMsk.height = pxHeight;
-
-    const cb = cBef.getContext('2d', {willReadFrequently: true});
-    const ca = cAft.getContext('2d', {willReadFrequently: true});
-    
-    cb.imageSmoothingEnabled = false;
-    ca.imageSmoothingEnabled = false;
-
+    const cb = document.getElementById('c-bef').getContext('2d');
+    const ca = document.getElementById('c-aft').getContext('2d');
+    document.getElementById('c-bef').width = document.getElementById('c-aft').width = pxWidth;
+    document.getElementById('c-bef').height = document.getElementById('c-aft').height = pxHeight;
     cb.drawImage(imgBefore, 0, 0, pxWidth, pxHeight);
-    ca.drawImage(imgAfter,  0, 0, pxWidth, pxHeight);
+    ca.drawImage(imgAfter, 0, 0, pxWidth, pxHeight);
 
-    // =========================================================================================
-    // CLOUD AI API CALL (Connected to Google Colab / Ngrok)
-    // =========================================================================================
-    
-    // REPLACE THIS URL WITH YOUR LIVE NGROK LINK FROM COLAB!
-    const AI_API_URL = "https://nonexperientially-nonconsistorial-huey.ngrok-free.dev/analyze";
+    // --- AI API CALL ---
+    const AI_API_URL = "https://nonexperientially-nonconsistorial-huey.ngrok-free.dev/analyze"; // <--- CHANGE THIS
 
-    const response = await fetch(AI_API_URL, {
+    const aiRes = await fetch(AI_API_URL, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "ngrok-skip-browser-warning": "true" 
-      },
+      headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
       body: JSON.stringify({
-        bounds: {
-          north: aoiRect.ne.lat,
-          south: aoiRect.sw.lat,
-          east: aoiRect.ne.lng,
-          west: aoiRect.sw.lng
-        }
+        bounds: { north: aoiRect.ne.lat, south: aoiRect.sw.lat, east: aoiRect.ne.lng, west: aoiRect.sw.lng }
       })
     });
 
-    const result = await response.json();
-    
-    if (result.status === "success") {
-      realDetections = result.detections;
-    } else {
-      realDetections = [];
-    }
+    const result = await aiRes.json();
+    realDetections = (result.status === "success") ? result.detections : [];
 
-    document.getElementById('analysis-status-text').innerHTML = `
-      Analyzed sector via <b style="color:var(--teal)">Cloud AI</b>.<br>
-      Found <b>${realDetections.length}</b> verified construction signatures.<br>
-    `;
+    document.getElementById('analysis-status-text').innerHTML = `Analyzed via <b style="color:var(--teal)">Cloud AI</b>. Found <b>${realDetections.length}</b> signatures.`;
 
-    // Swap Bottom Bar UI to Map Overlay controls
     document.getElementById('aoi-default-controls').style.display = 'none';
     const postControls = document.getElementById('aoi-post-controls');
     postControls.style.display = 'flex';
     postControls.innerHTML = `
-      <span class="aoi-bottom-label" style="color:var(--text-1)">MAP OVERLAYS:</span>
-      <button class="aoi-run-btn" style="background:#3b82f6;color:#fff" onclick="toggleMapOverlay('before')">📅 ${yearsLabel}</button>
+      <button class="aoi-run-btn" style="background:#3b82f6" onclick="toggleMapOverlay('before')">📅 History</button>
       <button class="aoi-run-btn" style="background:var(--teal);color:#111" onclick="toggleMapOverlay('after')">📡 Today</button>
-      <button class="aoi-run-btn" style="background:var(--bg-card);color:var(--text-1);border:1px solid var(--border)" onclick="toggleMapOverlay('none')">🗺️ Base</button>
-      <div class="aoi-sep"></div>
-      <button class="aoi-run-btn" style="background:var(--amber);color:#111" id="toggle-dots-btn" onclick="toggleMarkers()">👁 Hide Dots</button>
+      <button class="aoi-run-btn" style="background:var(--bg-card)" onclick="toggleMapOverlay('none')">🗺️ Base</button>
       <button class="aoi-clear-btn" onclick="clearAOI()">✕ Clear</button>
     `;
 
-    // Default to showing "After" overlay for visual context
     toggleMapOverlay('after');
     plotRealDetections();
 
   } catch (err) {
-    console.error("Analysis aborted:", err);
-    document.getElementById('analysis-status-text').innerHTML = `
-      <div style="color:var(--red);font-size:11px;padding:8px;background:var(--bg-card);border:1px solid rgba(244,63,94,0.3);border-radius:6px;margin-bottom:8px;line-height:1.4;">
-        <b>Analysis aborted:</b><br>${err.message}
-      </div>
-    `;
-    list.innerHTML = `<div style="color:var(--text-3);font-size:12px;text-align:center;padding:20px 0;">Awaiting valid data.</div>`;
+    console.error(err);
+    document.getElementById('analysis-status-text').innerHTML = `<div style="color:var(--red)">AI Server Offline or Error</div>`;
   }
 }
-    realDetections.sort((a,b) => b.conf - a.conf);
-
-    document.getElementById('analysis-status-text').innerHTML = `
-      Analyzed <b style="color:var(--teal)">${pxWidth * pxHeight}</b> supersampled pixels.<br>
-      Found <b>${realDetections.length}</b> verified construction signatures.<br>
-      <span style="font-size:9.5px;color:var(--text-3);">*Optical filter active: Ignoring standard shadows & seasons.</span>
-    `;
-
-    // Swap Bottom Bar UI to Map Overlay controls
-    document.getElementById('aoi-default-controls').style.display = 'none';
-    const postControls = document.getElementById('aoi-post-controls');
-    postControls.style.display = 'flex';
-    postControls.innerHTML = `
-      <span class="aoi-bottom-label" style="color:var(--text-1)">MAP OVERLAYS:</span>
-      <button class="aoi-run-btn" style="background:#3b82f6;color:#fff" onclick="toggleMapOverlay('before')">📅 ${yearsLabel}</button>
-      <button class="aoi-run-btn" style="background:var(--teal);color:#111" onclick="toggleMapOverlay('after')">📡 Today</button>
-      <button class="aoi-run-btn" style="background:var(--bg-card);color:var(--text-1);border:1px solid var(--border)" onclick="toggleMapOverlay('none')">🗺️ Base</button>
-      <div class="aoi-sep"></div>
-      <button class="aoi-run-btn" style="background:var(--amber);color:#111" id="toggle-dots-btn" onclick="toggleMarkers()">👁 Hide Dots</button>
-      <button class="aoi-clear-btn" onclick="clearAOI()">✕ Clear</button>
-    `;
-
-    // Default to showing "After" overlay for visual context
-    toggleMapOverlay('after');
-    plotRealDetections();
-
-  } catch (err) {
-    console.error("Analysis aborted:", err);
-    document.getElementById('analysis-status-text').innerHTML = `
-      <div style="color:var(--red);font-size:11px;padding:8px;background:var(--bg-card);border:1px solid rgba(244,63,94,0.3);border-radius:6px;margin-bottom:8px;line-height:1.4;">
-        <b>Analysis aborted:</b><br>${err.message}
-      </div>
-    `;
-    list.innerHTML = `<div style="color:var(--text-3);font-size:12px;text-align:center;padding:20px 0;">Awaiting valid data.</div>`;
-  }
-}
-
 /* ======================================================
    NEW UI INTERACTION FUNCTIONS
 ====================================================== */
@@ -1002,3 +914,4 @@ document.addEventListener('DOMContentLoaded', () => {
 </body>
 
 </html>
+
